@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dernière Heure</title>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+  <!-- React + Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body,#root{height:100%;}
+    body{background:#0d1018;color:#ddd0b0;font-family:'Courier New',monospace;}
+    #root{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;padding:16px;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.25;}}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    .fade{animation:fadeUp .28s ease both;}
+    .pulse{animation:pulse 2s ease infinite;}
+    .hov{transition:transform .12s,box-shadow .12s;cursor:pointer;}
+    .hov:hover{transform:translateY(-4px);box-shadow:0 14px 36px rgba(0,0,0,.75)!important;}
+    input{background:#080c12;border:1px solid #1e2838;color:#ddd0b0;padding:9px 12px;font-size:.9rem;border-radius:4px;font-family:'Courier New',monospace;width:100%;transition:border .15s;}
+    input:focus{outline:none;border-color:#c8a84b;}
+    button{cursor:pointer;font-family:'Courier New',monospace;}
+    ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:#1e2838;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Firebase init -->
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyCRUsO5EeKqCkBb794WZJtRZkGsNHBdK1w",
+    authDomain: "derniere-heure.firebaseapp.com",
+    databaseURL: "https://derniere-heure-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "derniere-heure",
+    storageBucket: "derniere-heure.firebasestorage.app",
+    messagingSenderId: "778303497592",
+    appId: "1:778303497592:web:3487ff7fe38c35438cd48d"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+</script>
+
+<script type="text/babel">
+const {useState,useEffect,useRef} = React;
+
+// ─── CONSTANTES ──────────────────────────────────────────────────────────────
+
+const CARDS = {
+  1:{name:"Gomme",      c:"#1e3a5f",a:"#7eb8f7"},
+  2:{name:"Cafteur",    c:"#2d1b5e",a:"#b39dfa"},
+  3:{name:"Surveillant",c:"#0c3d28",a:"#5ef0a8"},
+  4:{name:"Médaille",   c:"#5c3200",a:"#ffc94d"},
+  5:{name:"Harceleur",  c:"#5c1a00",a:"#ff9650"},
+  6:{name:"Casier",     c:"#5c0000",a:"#ff7070"},
+  7:{name:"Proviseur",  c:"#2a0a3f",a:"#df80ff"},
+  8:{name:"Trophée",    c:"#1a1000",a:"#ffd700"}
+};
+const FX = {
+  1:"Devine la carte d'un adversaire (sauf Gomme). Correct → éliminé.",
+  2:"Regarde secrètement la main d'un joueur.",
+  3:"Compare ta carte avec un adversaire. La plus faible est éliminée.",
+  4:"Tu es protégé(e) jusqu'à ton prochain tour.",
+  5:"Un joueur (toi inclus) défausse et repioche.",
+  6:"Échange ta carte avec celle d'un adversaire.",
+  7:"Défausse si tu tiens aussi Harceleur ou Casier.",
+  8:"Si joué, tu es immédiatement éliminé(e)."
+};
+const BASE   = [1,1,1,1,1,2,2,3,3,4,4,5,5,6,7,8];
+const GOAL   = {2:7,3:5,4:4,5:5,6:4};
+const REM    = {2:1,3:1,4:1,5:2,6:2};
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+
+const sh = a => {
+  const b=[...a];
+  for(let i=b.length-1;i>0;i--){const j=~~(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}
+  return b;
+};
+const mkDeck = n => sh(n>=5?[...BASE,...BASE]:[...BASE]);
+const genCode = () => Array.from({length:4},()=>"ABCDEFGHJKLMNPQRTUVWXY"[~~(Math.random()*22)]).join('');
+const genId   = () => Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-3);
+
+// ─── FIREBASE HELPERS ────────────────────────────────────────────────────────
+
+const store = {
+  async set(code, val) {
+    await db.ref(`rooms/${code}`).set(val);
+  },
+  async get(code) {
+    const snap = await db.ref(`rooms/${code}`).once('value');
+    return snap.val();
+  },
+  listen(code, cb) {
+    const r = db.ref(`rooms/${code}`);
+    r.on('value', snap => cb(snap.val()));
+    return () => r.off();
+  }
+};
+
+// ─── LOGIQUE DE JEU ──────────────────────────────────────────────────────────
+
+function initRound(players, numP, rn) {
+  const d=mkDeck(numP), rem=d.splice(0,REM[numP]);
+  const ps=players.map(p=>({...p,hand:[d.shift()],protected:false,eliminated:false}));
+  const drawn=d.shift();
+  return {players:ps,deck:d,discard:[],removed:rem,roundNum:rn,cur:0,drawnCard:drawn,phase:'choose',fx:null};
+}
+
+function applyCard(card, g) {
+  const cur=g.players[g.cur];
+  const excl=g.players.map((p,i)=>({p,i})).filter(({p,i})=>i!==g.cur&&!p.eliminated&&!p.protected).map(({i})=>i);
+  let st=[...excl];
+  if(g.numP>=5){const rn=(g.cur+1)%g.players.length;st=st.filter(i=>i!==rn);}
+  const incl=g.players.map((p,i)=>({p,i})).filter(({p,i})=>!p.eliminated&&(i===g.cur||!p.protected)).map(({i})=>i);
+  switch(card){
+    case 1:if(!excl.length)return nxt(g);return{...g,phase:'target',fx:{card,v:excl}};
+    case 2:if(!excl.length)return nxt(g);return{...g,phase:'target',fx:{card,v:excl}};
+    case 3:if(!st.length)return nxt(g);return{...g,phase:'target',fx:{card,v:st}};
+    case 4:{const ps=g.players.map((p,i)=>i===g.cur?{...p,protected:true}:p);return nxt({...g,players:ps});}
+    case 5:return{...g,phase:'target',fx:{card,v:incl}};
+    case 6:if(!excl.length)return nxt(g);return{...g,phase:'target',fx:{card,v:excl}};
+    case 7:return nxt(g);
+    case 8:{
+      const ps=g.players.map((p,i)=>i===g.cur?{...p,eliminated:true}:p);
+      const ng={...g,players:ps};
+      return{...ng,phase:'result',fx:{card,msg:`${cur.name} a joué le Trophée et est éliminé(e) !`,ag:ng}};
+    }
+    default:return nxt(g);
+  }
+}
+
+function applyTarget(g, ti) {
+  const{card}=g.fx,cur=g.players[g.cur],tgt=g.players[ti];
+  if(card===1)return{...g,phase:'guess',fx:{...g.fx,ti}};
+  if(card===2)return{...g,phase:'view',fx:{...g.fx,ti}};
+  if(card===3){
+    const mv=cur.hand[0],tv=tgt.hand[0];let msg,ps;
+    if(mv>tv){ps=g.players.map((p,i)=>i===ti?{...p,eliminated:true}:p);msg=`${cur.name} (${CARDS[mv].name}) bat ${tgt.name} (${CARDS[tv].name}) — ${tgt.name} est éliminé(e) !`;}
+    else if(tv>mv){ps=g.players.map((p,i)=>i===g.cur?{...p,eliminated:true}:p);msg=`${tgt.name} (${CARDS[tv].name}) bat ${cur.name} (${CARDS[mv].name}) — ${cur.name} est éliminé(e) !`;}
+    else{ps=g.players;msg="Égalité — personne n'est éliminé.";}
+    const ng={...g,players:ps};return{...ng,phase:'result',fx:{card,msg,ag:ng}};
+  }
+  if(card===5){
+    const disc=tgt.hand[0];let ps,d;
+    if(g.deck.length>0){ps=g.players.map((p,i)=>i===ti?{...p,hand:[g.deck[0]]}:p);d=g.deck.slice(1);}
+    else{ps=g.players.map((p,i)=>i===ti?{...p,hand:[g.removed[0]??disc]}:p);d=g.deck;}
+    const ng={...g,players:ps,deck:d,discard:[...g.discard,disc]};
+    return{...ng,phase:'result',fx:{card,msg:`${tgt.name} défausse ${CARDS[disc].name} et repioche.`,ag:ng}};
+  }
+  if(card===6){
+    const mv=cur.hand[0],tv=tgt.hand[0];
+    const ps=g.players.map((p,i)=>i===g.cur?{...p,hand:[tv]}:i===ti?{...p,hand:[mv]}:p);
+    const ng={...g,players:ps};return{...ng,phase:'result',fx:{card,msg:`${cur.name} échange sa carte avec ${tgt.name}.`,ag:ng}};
+  }
+  return nxt(g);
+}
+
+function applyGuess(g, guess) {
+  const{ti}=g.fx,tgt=g.players[ti],tv=tgt.hand[0];
+  let msg,ps;
+  if(guess===tv){ps=g.players.map((p,i)=>i===ti?{...p,eliminated:true}:p);msg=`Bonne réponse ! ${tgt.name} tenait ${CARDS[guess].name} et est éliminé(e) !`;}
+  else{ps=g.players;msg=`Mauvaise réponse. ${tgt.name} ne tenait pas ${CARDS[guess].name}.`;}
+  const ng={...g,players:ps};return{...ng,phase:'result',fx:{...g.fx,msg,ag:ng}};
+}
+
+function applyViewDone(g) {
+  const tgt=g.players[g.fx.ti],cur=g.players[g.cur];
+  return{...g,phase:'result',fx:{...g.fx,msg:`${cur.name} a regardé la carte de ${tgt.name}.`,ag:g}};
+}
+
+function afterResult(g) {
+  const ng=g.fx?.ag||g,act=ng.players.filter(p=>!p.eliminated);
+  if(act.length<=1||ng.deck.length===0)return endRound(ng);
+  return nxt(ng);
+}
+
+function nxt(g) {
+  const act=g.players.filter(p=>!p.eliminated);
+  if(act.length<=1||g.deck.length===0)return endRound(g);
+  let nx=(g.cur+1)%g.players.length;
+  while(g.players[nx].eliminated)nx=(nx+1)%g.players.length;
+  const ps=g.players.map((p,i)=>i===nx?{...p,protected:false}:p);
+  if(g.deck.length===0)return endRound({...g,players:ps});
+  return{...g,players:ps,deck:g.deck.slice(1),cur:nx,drawnCard:g.deck[0],phase:'choose',fx:null};
+}
+
+function endRound(g) {
+  const act=g.players.filter(p=>!p.eliminated);
+  let winners=[];
+  if(act.length===1)winners=[act[0]];
+  else if(act.length>1){const mx=Math.max(...act.map(p=>p.hand[0]));winners=act.filter(p=>p.hand[0]===mx);}
+  const ps=g.players.map(p=>winners.some(w=>w.id===p.id)?{...p,trophies:p.trophies+1}:p);
+  const gw=ps.find(p=>p.trophies>=(GOAL[g.numP]||4))||null;
+  return{...g,players:ps,phase:'round-end',fx:{rw:winners,gw},drawnCard:null};
+}
+
+// ─── STYLES ──────────────────────────────────────────────────────────────────
+
+const S = {
+  panel: {background:'#11161f',border:'1px solid #1e2838',borderRadius:8,padding:24,width:'100%',maxWidth:400},
+  btn: (v='gold') => ({
+    border:'none',borderRadius:2,padding:'11px 20px',fontSize:'.78rem',fontWeight:700,letterSpacing:'.15em',
+    background:v==='gold'?'#c8a84b':v==='ghost'?'transparent':'#b91c1c',
+    color:v==='gold'?'#0d0c06':'#c8a84b',
+    border:v==='ghost'?'1px solid rgba(200,168,75,.3)':'none',
+    cursor:'pointer',transition:'opacity .15s'
+  }),
+  tag: {fontSize:'.6rem',letterSpacing:'.28em',color:'#5a5040',textTransform:'uppercase'},
+  gold: {color:'#c8a84b'},
+  muted: {color:'#5a5040',fontSize:'.72rem'},
+};
+
+// ─── COMPOSANTS ──────────────────────────────────────────────────────────────
+
+function Chip({value,label,onClick,disabled,small}) {
+  const c=CARDS[value],sz=small?90:130;
+  return (
+    <div onClick={disabled?null:onClick} className={disabled?'':'hov'} style={{
+      background:'#f2ead8',borderRadius:7,border:'2px solid #c4b896',
+      width:sz,minHeight:small?110:160,display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',gap:4,padding:'10px 7px',
+      opacity:disabled?.3:1,cursor:disabled?'not-allowed':'pointer',
+      boxShadow:'0 4px 16px rgba(0,0,0,.5)',flexShrink:0,position:'relative'
+    }}>
+      <div style={{width:small?26:36,height:small?26:36,borderRadius:'50%',background:c.c,color:c.a,
+        display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,
+        fontSize:small?'.8rem':'1.05rem',boxShadow:`0 0 8px ${c.a}44`}}>{value}</div>
+      <div style={{fontWeight:700,fontSize:small?'.7rem':'.9rem',color:'#1a1008',textAlign:'center',lineHeight:1.2}}>{c.name}</div>
+      {!small&&<div style={{fontSize:'.56rem',color:'#6b5a3a',textAlign:'center',lineHeight:1.5,padding:'0 2px'}}>{FX[value]}</div>}
+      {label&&<div style={{position:'absolute',top:3,right:5,fontSize:'.48rem',color:'#8b7355',letterSpacing:'.08em'}}>{label}</div>}
+    </div>
+  );
+}
+
+function Score({players,cur,myId,numP}) {
+  return (
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'center',marginBottom:14,
+      padding:'10px',background:'#080c12',borderRadius:5,border:'1px solid #1e2838'}}>
+      {players.map((p,i)=>(
+        <div key={p.id} style={{textAlign:'center',padding:'4px 8px',borderRadius:3,
+          border:i===cur?'1px solid #c8a84b':'1px solid transparent',
+          background:i===cur?'#1a1400':'transparent',opacity:p.eliminated?.3:1}}>
+          <div style={{fontSize:'.62rem',color:p.id===myId?'#c8a84b':'#ddd0b0',marginBottom:1}}>
+            {p.name}{p.id===myId?' ★':''}
+          </div>
+          <div style={{fontSize:'.72rem'}}>{p.trophies?'🏆'.repeat(p.trophies):'·'}</div>
+          {p.protected&&<div style={{fontSize:'.5rem',color:'#22c55e'}}>🛡</div>}
+          {p.eliminated&&<div style={{fontSize:'.5rem',color:'#b91c1c'}}>✕</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Wait({children}) {
+  return (
+    <div style={{textAlign:'center',padding:'28px 0'}}>
+      <div className="pulse" style={{...S.muted,marginBottom:12,letterSpacing:'.22em'}}>EN ATTENTE</div>
+      <div style={{fontSize:'.88rem',lineHeight:1.7}}>{children}</div>
+    </div>
+  );
+}
+
+function DeckBar({deck,discard,roundNum}) {
+  return (
+    <div style={{display:'flex',justifyContent:'space-between',marginBottom:12,...S.muted}}>
+      <span style={S.tag}>manche {roundNum}</span>
+      <span>pioche : {deck} · défausse : {discard}</span>
+    </div>
+  );
+}
+
+// ─── ÉCRAN ACCUEIL ───────────────────────────────────────────────────────────
+
+function Home({onCreate,onJoin,loading,err}) {
+  const[name,setName]=useState('');
+  const[code,setCode]=useState('');
+  const[tab,setTab]=useState('create');
+  return (
+    <div style={{...S.panel}} className="fade">
+      <div style={{textAlign:'center',marginBottom:24}}>
+        <div style={{fontFamily:"Georgia,serif",fontSize:'clamp(1.9rem,8vw,3rem)',...S.gold,lineHeight:1.1}}>
+          Dernière<br/><em>Heure</em>
+        </div>
+        <div style={{...S.tag,marginTop:6}}>jeu de cartes multijoueur</div>
+      </div>
+
+      <div style={{marginBottom:16}}>
+        <div style={{...S.tag,marginBottom:5}}>ton prénom</div>
+        <input value={name} onChange={e=>setName(e.target.value)} placeholder="Entre ton prénom"/>
+      </div>
+
+      <div style={{display:'flex',gap:5,marginBottom:14}}>
+        {['create','join'].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            ...S.btn(t===tab?'gold':'ghost'),flex:1,padding:'9px 4px',fontSize:'.72rem'
+          }}>{t==='create'?'CRÉER':'REJOINDRE'}</button>
+        ))}
+      </div>
+
+      {tab==='create'&&<>
+        <div style={{...S.muted,marginBottom:14,lineHeight:1.7}}>
+          Crée un salon et partage le code à tes adversaires. 2 à 6 joueurs.
+        </div>
+        <button onClick={()=>onCreate(name)} disabled={!name.trim()||loading}
+          style={{...S.btn(),width:'100%',padding:13,opacity:(!name.trim()||loading)?.4:1}}>
+          {loading?'CRÉATION…':'CRÉER LE SALON →'}
+        </button>
+      </>}
+
+      {tab==='join'&&<>
+        <div style={{...S.tag,marginBottom:5}}>code du salon</div>
+        <input value={code} onChange={e=>setCode(e.target.value.toUpperCase().slice(0,4))}
+          placeholder="XXXX" maxLength={4}
+          style={{textAlign:'center',fontSize:'1.8rem',fontFamily:"Georgia,serif",
+            letterSpacing:'.4em',...S.gold,marginBottom:12,padding:'10px'}}/>
+        <button onClick={()=>onJoin(name,code)} disabled={!name.trim()||code.length<4||loading}
+          style={{...S.btn(),width:'100%',padding:13,opacity:(!name.trim()||code.length<4||loading)?.4:1}}>
+          {loading?'CONNEXION…':'REJOINDRE →'}
+        </button>
+      </>}
+
+      {err&&<div style={{marginTop:12,padding:'9px 12px',background:'#1f0000',
+        border:'1px solid #b91c1c',borderRadius:4,fontSize:'.75rem',color:'#ff8080'}}>{err}</div>}
+    </div>
+  );
+}
+
+// ─── ÉCRAN LOBBY ─────────────────────────────────────────────────────────────
+
+function Lobby({g,myId,onStart,onBack}) {
+  const isHost=g.host===myId,can=isHost&&g.players.length>=2;
+  return (
+    <div style={{...S.panel}} className="fade">
+      <div style={{textAlign:'center',marginBottom:20}}>
+        <div style={{...S.tag,marginBottom:6}}>code du salon</div>
+        <div style={{fontFamily:"Georgia,serif",fontSize:'3rem',...S.gold,letterSpacing:'.35em',fontWeight:700}}>
+          {g.code}
+        </div>
+        <div style={{...S.muted,marginTop:3}}>Partage ce code à tes adversaires</div>
+      </div>
+
+      <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+        <span style={S.tag}>joueurs ({g.players.length}/6)</span>
+        <span style={S.tag}>objectif : {GOAL[g.players.length]||'—'} 🏆</span>
+      </div>
+
+      <div style={{background:'#080c12',borderRadius:5,border:'1px solid #1e2838',marginBottom:16,overflow:'hidden'}}>
+        {g.players.map((p,i)=>(
+          <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'9px 12px',
+            borderBottom:i<g.players.length-1?'1px solid #1e2838':'none'}}>
+            <span style={{color:p.id===myId?'#c8a84b':'#ddd0b0',fontSize:'.9rem'}}>
+              {p.name}{p.id===myId?' (toi)':''}{p.id===g.host?' 👑':''}
+            </span>
+            <span style={S.muted}>Joueur {i+1}</span>
+          </div>
+        ))}
+      </div>
+
+      {isHost?(
+        <>
+          {g.players.length<2&&<div className="pulse" style={{...S.muted,textAlign:'center',marginBottom:10,letterSpacing:'.2em'}}>
+            EN ATTENTE D'UN AUTRE JOUEUR…
+          </div>}
+          <button onClick={onStart} disabled={!can}
+            style={{...S.btn(),width:'100%',padding:13,opacity:can?1:.4}}>
+            COMMENCER LA PARTIE →
+          </button>
+        </>
+      ):(
+        <div className="pulse" style={{...S.muted,textAlign:'center',letterSpacing:'.2em',padding:'8px 0'}}>
+          EN ATTENTE DE L'HÔTE…
+        </div>
+      )}
+
+      <button onClick={onBack} style={{display:'block',width:'100%',marginTop:8,padding:'8px',
+        ...S.btn('ghost'),fontSize:'.68rem'}}>QUITTER</button>
+    </div>
+  );
+}
+
+// ─── ÉCRAN DE JEU ────────────────────────────────────────────────────────────
+
+function Game({g,myId,onPlay,onTarget,onGuess,onViewDone,onContinue,onNextRound}) {
+  const mi=g.players.findIndex(p=>p.id===myId);
+  const me=g.players[mi],isMT=mi===g.cur,curP=g.players[g.cur];
+  const goal=GOAL[g.numP]||4;
+
+  const hdr=(
+    <>
+      <Score players={g.players} cur={g.cur} myId={myId} numP={g.numP}/>
+      <DeckBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+    </>
+  );
+
+  if(me?.eliminated&&g.phase!=='round-end') return (
+    <div style={{...S.panel}} className="fade">{hdr}
+      <Wait><span style={{color:'#b91c1c'}}>✕ Tu es éliminé(e)</span><br/>
+        C'est le tour de <span style={S.gold}>{curP.name}</span>
+      </Wait>
+    </div>
+  );
+
+  // CHOOSE
+  if(g.phase==='choose') {
+    if(isMT) {
+      const h=me.hand[0],d=g.drawnCard,cards=[h,d];
+      const forced=cards.includes(7)&&(cards.includes(5)||cards.includes(6));
+      return (
+        <div style={{maxWidth:440,width:'100%'}} className="fade">
+          {hdr}
+          <div style={{textAlign:'center',marginBottom:14}}>
+            <span style={S.tag}>ton tour — </span>
+            <span style={S.gold}> {me.name}</span>
+            {me.protected&&<span style={{marginLeft:8,fontSize:'.65rem',color:'#22c55e'}}>🛡 protégé(e)</span>}
+          </div>
+          {forced&&<div style={{background:'#1f0800',border:'1px solid #7c2d12',borderRadius:4,
+            padding:'8px 12px',marginBottom:12,fontSize:'.72rem',color:'#ff9050',textAlign:'center'}}>
+            ⚠ Tu dois jouer le Proviseur — tu tiens aussi {cards.includes(5)?'Harceleur':'Casier'}.
+          </div>}
+          <div style={{...S.tag,textAlign:'center',marginBottom:10}}>quelle carte joues-tu ?</div>
+          <div style={{display:'flex',gap:14,justifyContent:'center'}}>
+            {cards.map((v,i)=>(
+              <Chip key={i} value={v} label={i===0?'EN MAIN':'PIOCHÉE'}
+                disabled={forced&&v!==7} onClick={()=>onPlay(i)}/>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return <div style={{...S.panel}} className="fade">{hdr}
+      <Wait><span style={S.gold}>{curP.name}</span> choisit une carte…</Wait>
+    </div>;
+  }
+
+  // TARGET
+  if(g.phase==='target') {
+    if(isMT) {
+      const tgts=g.fx.v.map(i=>g.players[i]);
+      return (
+        <div style={{...S.panel}} className="fade">{hdr}
+          <div style={{textAlign:'center',marginBottom:16}}>
+            <div style={{fontFamily:"Georgia,serif",fontSize:'1.3rem',...S.gold,marginBottom:3}}>{CARDS[g.fx.card].name}</div>
+            <div style={{...S.muted,lineHeight:1.6}}>{FX[g.fx.card]}</div>
+          </div>
+          <div style={{...S.tag,marginBottom:8}}>choisis une cible</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {tgts.map((p,i)=>(
+              <button key={p.id} onClick={()=>onTarget(g.fx.v[i])}
+                style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                  padding:'11px 14px',background:'#080c12',border:'1px solid #1e2838',
+                  borderRadius:4,color:'#ddd0b0',fontSize:'.9rem',transition:'border .12s,background .12s'}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor='#c8a84b';e.currentTarget.style.background='#1a1400';}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor='#1e2838';e.currentTarget.style.background='#080c12';}}>
+                <span>{p.name}</span>
+                <span style={{opacity:.6}}>{'🏆'.repeat(p.trophies)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return <div style={{...S.panel}} className="fade">{hdr}
+      <Wait><span style={S.gold}>{curP.name}</span> choisit une cible…</Wait>
+    </div>;
+  }
+
+  // GUESS
+  if(g.phase==='guess') {
+    if(isMT) {
+      const tgt=g.players[g.fx.ti];
+      return (
+        <div style={{maxWidth:440,width:'100%'}} className="fade">{hdr}
+          <div style={{textAlign:'center',marginBottom:14}}>
+            <div style={{fontFamily:"Georgia,serif",fontSize:'1.3rem',...S.gold,marginBottom:4}}>Gomme</div>
+            <div style={{fontSize:'.85rem'}}>Quelle carte tient <strong style={S.gold}>{tgt.name}</strong> ?</div>
+            <div style={{...S.muted,marginTop:2}}>(sauf Gomme)</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10,justifyItems:'center'}}>
+            {Object.entries(CARDS).filter(([v])=>Number(v)!==1).map(([v])=>(
+              <Chip key={v} value={Number(v)} small onClick={()=>onGuess(Number(v))}/>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    const tgt=g.players[g.fx?.ti];
+    return <div style={{...S.panel}} className="fade">{hdr}
+      <Wait><span style={S.gold}>{curP.name}</span> essaie de deviner la carte de <span style={S.gold}>{tgt?.name}</span>…</Wait>
+    </div>;
+  }
+
+  // VIEW (Cafteur)
+  if(g.phase==='view') {
+    const tgt=g.players[g.fx?.ti],amIT=g.fx?.ti===mi;
+    if(isMT) {
+      const cv=tgt?.hand[0];
+      return (
+        <div style={{...S.panel,textAlign:'center'}} className="fade">{hdr}
+          <div style={{fontFamily:"Georgia,serif",fontSize:'1.3rem',...S.gold,marginBottom:3}}>Cafteur</div>
+          <div style={{...S.muted,marginBottom:5}}>carte de {tgt?.name}</div>
+          <div style={{display:'inline-flex',alignItems:'center',gap:5,background:'#1f0000',
+            border:'1px solid #7c1c1c',borderRadius:99,padding:'2px 10px',
+            fontSize:'.62rem',color:'#ff8080',marginBottom:16}}>
+            ⚠ visible uniquement pour toi
+          </div>
+          {cv&&<div style={{display:'flex',justifyContent:'center',marginBottom:16}}><Chip value={cv}/></div>}
+          <button onClick={onViewDone} style={{...S.btn(),width:'100%'}}>J'AI VU — CONTINUER</button>
+        </div>
+      );
+    }
+    return <div style={{...S.panel}} className="fade">{hdr}
+      <Wait>
+        {amIT
+          ?<><span style={S.gold}>{curP.name}</span> regarde ta carte… 👀</>
+          :<><span style={S.gold}>{curP.name}</span> regarde la carte de <span style={S.gold}>{tgt?.name}</span>…</>
+        }
+      </Wait>
+    </div>;
+  }
+
+  // RESULT
+  if(g.phase==='result') return (
+    <div style={{...S.panel}} className="fade">{hdr}
+      <div style={{fontFamily:"Georgia,serif",fontSize:'1.3rem',...S.gold,fontStyle:'italic',textAlign:'center',marginBottom:12}}>
+        Résultat
+      </div>
+      <div style={{background:'#080c12',border:'1px solid #1e2838',borderRadius:5,
+        padding:'14px',marginBottom:16,fontSize:'.85rem',lineHeight:1.8,textAlign:'center'}}>
+        {g.fx?.msg}
+      </div>
+      {isMT
+        ?<button onClick={onContinue} style={{...S.btn(),width:'100%'}}>CONTINUER →</button>
+        :<div className="pulse" style={{...S.muted,textAlign:'center',letterSpacing:'.18em'}}>
+          EN ATTENTE DE {curP.name.toUpperCase()}…
+        </div>
+      }
+    </div>
+  );
+
+  // ROUND-END
+  if(g.phase==='round-end') {
+    const rw=g.fx?.rw||[],gw=g.fx?.gw,isH=g.host===myId;
+    return (
+      <div style={{...S.panel}} className="fade">
+        <div style={{textAlign:'center',marginBottom:18}}>
+          <span style={S.tag}>fin de la manche {g.roundNum}</span>
+          <div style={{fontSize:'2rem',margin:'8px 0 5px'}}>🏆</div>
+          <div style={{fontFamily:"Georgia,serif",fontSize:'1.7rem',...S.gold,fontWeight:700}}>
+            {rw.map(w=>w.name).join(' & ')||'—'}
+          </div>
+          {rw.length>1&&<div style={{...S.muted,marginTop:2}}>égalité</div>}
+        </div>
+        <div style={{background:'#080c12',border:'1px solid #1e2838',borderRadius:5,padding:'10px',marginBottom:16}}>
+          {[...g.players].sort((a,b)=>b.trophies-a.trophies).map(p=>(
+            <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',
+              borderBottom:'1px solid #1e2838',opacity:p.eliminated?.4:1}}>
+              <span style={{fontSize:'.85rem',color:rw.some(w=>w.id===p.id)?'#c8a84b':'#ddd0b0'}}>
+                {p.name}{p.id===myId?' (toi)':''}
+              </span>
+              <span style={{fontSize:'.82rem'}}>{'🏆'.repeat(p.trophies)} <span style={S.muted}>/{goal}</span></span>
+            </div>
+          ))}
+        </div>
+        {isH
+          ?<button onClick={onNextRound} style={{...S.btn(),width:'100%',padding:13}}>
+            {gw?'VOIR LE VAINQUEUR →':'MANCHE SUIVANTE →'}
+          </button>
+          :<div className="pulse" style={{...S.muted,textAlign:'center',letterSpacing:'.18em'}}>
+            EN ATTENTE DE L'HÔTE…
+          </div>
+        }
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ─── ÉCRAN FIN ───────────────────────────────────────────────────────────────
+
+function End({g,myId,onNew}) {
+  const sorted=[...g.players].sort((a,b)=>b.trophies-a.trophies);
+  const gw=sorted[0],isH=g.host===myId;
+  return (
+    <div style={{...S.panel,textAlign:'center'}} className="fade">
+      <span style={S.tag}>partie terminée</span>
+      <div style={{fontSize:'3rem',margin:'14px 0 8px'}}>🏆</div>
+      <div style={{fontFamily:"Georgia,serif",fontSize:'2rem',...S.gold,fontWeight:700,marginBottom:5}}>{gw?.name}</div>
+      <div style={{...S.muted,marginBottom:22}}>{gw?.trophies} trophées remportés</div>
+      <div style={{background:'#080c12',border:'1px solid #1e2838',borderRadius:5,padding:'10px',marginBottom:18,textAlign:'left'}}>
+        {sorted.map((p,r)=>(
+          <div key={p.id} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #1e2838'}}>
+            <span style={{fontSize:'.88rem',color:r===0?'#c8a84b':'#ddd0b0'}}>
+              {r===0?'👑 ':r===1?'🥈 ':'   '}{p.name}{p.id===myId?' (toi)':''}
+            </span>
+            <span>{'🏆'.repeat(p.trophies)}</span>
+          </div>
+        ))}
+      </div>
+      {isH
+        ?<button onClick={onNew} style={{...S.btn(),width:'100%',padding:13}}>NOUVELLE PARTIE</button>
+        :<div className="pulse" style={{...S.muted,letterSpacing:'.18em'}}>EN ATTENTE DE L'HÔTE…</div>
+      }
+    </div>
+  );
+}
+
+// ─── APP PRINCIPAL ───────────────────────────────────────────────────────────
+
+function App() {
+  const[myId,  setMyId]  =useState('');
+  const[screen,setScreen]=useState('home');
+  const[code,  setCode]  =useState('');
+  const[g,     setG]     =useState(null);
+  const[err,   setErr]   =useState('');
+  const[loading,setLoad] =useState(false);
+  const vRef=useRef(-1);
+
+  // Player ID via localStorage
+  useEffect(()=>{
+    let id=localStorage.getItem('dh_pid');
+    if(!id){id=genId();localStorage.setItem('dh_pid',id);}
+    setMyId(id);
+  },[]);
+
+  // Écoute Firebase en temps réel
+  useEffect(()=>{
+    if(!code||screen==='home')return;
+    return store.listen(code, data=>{
+      if(!data)return;
+      if(data.version!==vRef.current){
+        vRef.current=data.version;
+        setG(data);
+        if(data.status==='lobby')   setScreen('lobby');
+        if(data.status==='playing') setScreen('game');
+        if(data.status==='end')     setScreen('end');
+      }
+    });
+  },[code]);
+
+  const write=async s=>{
+    const ns={...s,version:(s.version||0)+1};
+    await store.set(code,ns);
+    vRef.current=ns.version;
+    setG(ns);
+    return ns;
+  };
+
+  // ── Actions accueil ───────────────────────────────────────────────────────
+
+  async function handleCreate(name) {
+    if(!name.trim()||!myId)return;
+    setLoad(true);setErr('');
+    const c=genCode();
+    const s={status:'lobby',version:0,host:myId,code:c,players:[{id:myId,name:name.trim(),trophies:0}]};
+    await store.set(c,s);
+    vRef.current=0;setCode(c);setG(s);setScreen('lobby');setLoad(false);
+  }
+
+  async function handleJoin(name,c) {
+    if(!name.trim()||!myId||!c)return;
+    setLoad(true);setErr('');
+    const data=await store.get(c);
+    if(!data){setErr('Salon introuvable.');setLoad(false);return;}
+    if(data.status!=='lobby'){setErr('La partie a déjà commencé.');setLoad(false);return;}
+    if(data.players.length>=6){setErr('Salon plein.');setLoad(false);return;}
+    let ns=data;
+    if(!data.players.some(p=>p.id===myId)){
+      ns={...data,players:[...data.players,{id:myId,name:name.trim(),trophies:0}],version:data.version+1};
+      await store.set(c,ns);
+    }
+    vRef.current=ns.version;setCode(c);setG(ns);setScreen('lobby');setLoad(false);
+  }
+
+  // ── Actions lobby ─────────────────────────────────────────────────────────
+
+  async function handleStart() {
+    if(!g||g.host!==myId||g.players.length<2)return;
+    const numP=g.players.length,rd=initRound(g.players,numP,1);
+    await write({...g,status:'playing',numP,...rd});
+  }
+
+  // ── Actions jeu ───────────────────────────────────────────────────────────
+
+  const mi=g?.players?.findIndex(p=>p.id===myId)??-1;
+  const isMT=g&&mi===g.cur;
+
+  async function onPlay(idx) {
+    if(!isMT||g.phase!=='choose')return;
+    const p=g.players[g.cur],cards=[p.hand[0],g.drawnCard];
+    const played=cards[idx],kept=cards[1-idx];
+    if(cards.includes(7)&&(cards.includes(5)||cards.includes(6))&&played!==7)return;
+    const ps=g.players.map((pl,i)=>i===g.cur?{...pl,hand:[kept]}:pl);
+    const ng={...g,players:ps,discard:[...g.discard,played],drawnCard:null};
+    const nx=applyCard(played,ng);
+    if(nx)await write({...g,...nx});
+  }
+
+  async function onTarget(ti) {
+    if(!isMT||g.phase!=='target')return;
+    const nx=applyTarget(g,ti);if(nx)await write({...g,...nx});
+  }
+
+  async function onGuess(guess) {
+    if(!isMT||g.phase!=='guess')return;
+    const nx=applyGuess(g,guess);await write({...g,...nx});
+  }
+
+  async function onViewDone() {
+    if(!isMT||g.phase!=='view')return;
+    const nx=applyViewDone(g);await write({...g,...nx});
+  }
+
+  async function onContinue() {
+    if(!isMT||g.phase!=='result')return;
+    const nx=afterResult(g);await write({...g,...nx});
+  }
+
+  async function onNextRound() {
+    if(!g||g.host!==myId||g.phase!=='round-end')return;
+    if(g.fx?.gw)await write({...g,status:'end'});
+    else{const rd=initRound(g.players,g.numP,g.roundNum+1);await write({...g,...rd});}
+  }
+
+  async function onNew() {
+    if(!g||g.host!==myId)return;
+    const s={status:'lobby',version:g.version,host:myId,code,
+      players:g.players.map(p=>({id:p.id,name:p.name,trophies:0}))};
+    await write(s);setScreen('lobby');
+  }
+
+  function onBack(){setScreen('home');setCode('');setG(null);vRef.current=-1;}
+
+  // ── Rendu ─────────────────────────────────────────────────────────────────
+
+  return (
+    <>
+      {screen==='home' &&<Home onCreate={handleCreate} onJoin={handleJoin} loading={loading} err={err}/>}
+      {screen==='lobby'&&g&&<Lobby g={g} myId={myId} onStart={handleStart} onBack={onBack}/>}
+      {screen==='game' &&g&&<Game g={g} myId={myId} onPlay={onPlay} onTarget={onTarget}
+        onGuess={onGuess} onViewDone={onViewDone} onContinue={onContinue} onNextRound={onNextRound}/>}
+      {screen==='end'  &&g&&<End g={g} myId={myId} onNew={onNew}/>}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
