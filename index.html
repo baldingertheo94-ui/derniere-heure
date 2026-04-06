@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Derniere Heure</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.4/babel.min.js"></script>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;overflow-x:hidden;}
+    body{background:#0d1018;color:#ddd0b0;font-family:'Courier New',monospace;
+      -webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%;}
+    #root{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+      min-height:100vh;min-height:-webkit-fill-available;
+      padding:12px 12px 32px;width:100%;}
+    /* Limit width on desktop but full width on mobile */
+    #root > div{width:100%;max-width:420px;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.2;}}
+    .fade{animation:fadeUp .25s ease both;}
+    .pulse{animation:pulse 2s ease infinite;}
+    /* Touch-friendly tap instead of hover */
+    .hov{transition:transform .1s,box-shadow .1s;cursor:pointer;-webkit-user-select:none;user-select:none;}
+    .hov:active{transform:scale(0.96);box-shadow:0 2px 8px rgba(0,0,0,.6)!important;}
+    input{background:#080c12;border:1px solid #1e2838;color:#ddd0b0;
+      padding:14px 14px;font-size:16px;border-radius:8px;
+      font-family:'Courier New',monospace;width:100%;transition:border .15s;
+      -webkit-appearance:none;appearance:none;}
+    input:focus{outline:none;border-color:#c8a84b;}
+    button{cursor:pointer;font-family:'Courier New',monospace;
+      -webkit-tap-highlight-color:transparent;
+      min-height:44px;touch-action:manipulation;}
+    button:active{opacity:.75;}
+    /* Scrollable content on small screens */
+    .scroll{overflow-y:auto;-webkit-overflow-scrolling:touch;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  firebase.initializeApp({
+    apiKey:"AIzaSyCRUsO5EeKqCkBb794WZJtRZkGsNHBdK1w",
+    authDomain:"derniere-heure.firebaseapp.com",
+    databaseURL:"https://derniere-heure-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId:"derniere-heure",
+    storageBucket:"derniere-heure.firebasestorage.app",
+    messagingSenderId:"778303497592",
+    appId:"1:778303497592:web:3487ff7fe38c35438cd48d"
+  });
+  const db=firebase.database();
+</script>
+<script type="text/babel">
+const {useState,useEffect}=React;
+
+const CARDS={
+  1:{name:"Plante",  e:"🌿",c:"#0c3d28",a:"#5ef0a8"},
+  2:{name:"Rat",     e:"🐀",c:"#2d1b5e",a:"#b39dfa"},
+  3:{name:"Canard",  e:"🦆",c:"#1e3a5f",a:"#7eb8f7"},
+  4:{name:"Bague",   e:"💍",c:"#5c3200",a:"#ffc94d"},
+  5:{name:"Troll",   e:"👹",c:"#5c1a00",a:"#ff9650"},
+  6:{name:"Kiosque", e:"🏦",c:"#5c0000",a:"#ff7070"},
+  7:{name:"Dragon",  e:"🐉",c:"#2a0a3f",a:"#df80ff"},
+  8:{name:"Butin",   e:"💰",c:"#1a1000",a:"#ffd700"},
+};
+const EFFECTS={
+  1:"Devine la carte d'un adversaire (sauf Plante). Correct => elimine.",
+  2:"Regarde secretement la main d'un joueur.",
+  3:"Compare ta carte avec un adversaire. La plus faible est eliminee.",
+  4:"Tu es protege(e) jusqu'a ton prochain tour.",
+  5:"Un joueur (toi inclus) defausse et repioche une nouvelle carte.",
+  6:"Echange ta carte avec celle d'un adversaire.",
+  7:"Defausse si tu tiens aussi Troll ou Kiosque.",
+  8:"Si joue, tu es immediatement elimine(e).",
+};
+const BASE=[1,1,1,1,1,2,2,3,3,4,4,5,5,6,7,8];
+const GOAL={2:7,3:5,4:4};
+const REM={2:1,3:1,4:1};
+
+const sh=a=>{const b=[...a];for(let i=b.length-1;i>0;i--){const j=~~(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b;};
+const mkDeck=()=>sh([...BASE]);
+const genCode=()=>Array.from({length:4},()=>"ABCDEFGHJKLMNPQRTUVWXY"[~~(Math.random()*22)]).join("");
+const genId=()=>Math.random().toString(36).slice(2,10);
+
+function fixArr(o){
+  if(o===null||o===undefined)return o;
+  if(typeof o!=="object")return o;
+  if(Array.isArray(o))return o.map(fixArr);
+  const keys=Object.keys(o);
+  if(keys.length>0&&keys.every(k=>!isNaN(Number(k)))){const a=[];keys.forEach(k=>{a[Number(k)]=fixArr(o[k]);});return a;}
+  const r={};keys.forEach(k=>{r[k]=fixArr(o[k]);});return r;
+}
+function san(data){
+  if(!data)return data;
+  const d=fixArr(data);
+  d.deck=Array.isArray(d.deck)?d.deck:[];
+  d.discard=Array.isArray(d.discard)?d.discard:[];
+  d.removed=Array.isArray(d.removed)?d.removed:[];
+  d.players=Array.isArray(d.players)?d.players.map(p=>({...p,hand:Array.isArray(p.hand)?p.hand:[]})):[];
+  if(d.fx&&d.fx.v)d.fx.v=Array.isArray(d.fx.v)?d.fx.v:fixArr(d.fx.v)||[];
+  return d;
+}
+const FB={
+  set:(code,val)=>db.ref("rooms/"+code).set(val),
+  get:async code=>san((await db.ref("rooms/"+code).once("value")).val()),
+  listen:(code,cb)=>{const r=db.ref("rooms/"+code);r.on("value",s=>cb(san(s.val())));return()=>r.off();}
+};
+
+function initRound(players,numP,rn){
+  const d=mkDeck(),rem=d.splice(0,REM[numP]||1);
+  const ps=players.map(p=>({...p,hand:[Number(d.shift())],protected:false,eliminated:false}));
+  const drawn=Number(d.shift());
+  return{players:ps,deck:d,discard:[],removed:rem,roundNum:rn,cur:0,drawnCard:drawn,phase:"choose",fx:null};
+}
+function getExcl(g){return g.players.map((p,i)=>({p,i})).filter(({p,i})=>i!==g.cur&&!p.eliminated&&!p.protected).map(({i})=>i);}
+function getIncl(g){return g.players.map((p,i)=>({p,i})).filter(({p,i})=>!p.eliminated&&(i===g.cur||!p.protected)).map(({i})=>i);}
+
+function applyCard(card,g){card=Number(card);
+  const cur=g.players[g.cur],excl=getExcl(g),incl=getIncl(g);
+  switch(card){
+    case 1:if(!excl.length)return nxt(g);return{...g,phase:"target",fx:{card,v:excl}};
+    case 2:if(!excl.length)return nxt(g);return{...g,phase:"target",fx:{card,v:excl}};
+    case 3:if(!excl.length)return nxt(g);return{...g,phase:"target",fx:{card,v:excl}};
+    case 4:{const ps=g.players.map((p,i)=>i===g.cur?{...p,protected:true}:p);return nxt({...g,players:ps});}
+    case 5:return{...g,phase:"target",fx:{card,v:incl}};
+    case 6:if(!excl.length)return nxt(g);return{...g,phase:"target",fx:{card,v:excl}};
+    case 7:return nxt(g);
+    case 8:{const ps=g.players.map((p,i)=>i===g.cur?{...p,eliminated:true}:p);const ng={...g,players:ps};return{...ng,phase:"result",fx:{card,msg:cur.name+" a joue le Butin et est elimine(e) !",ag:ng}};}
+    default:return nxt(g);
+  }
+}
+function applyTarget(g,ti){
+  const{card}=g.fx,cur=g.players[g.cur],tgt=g.players[ti];
+  if(card===1)return{...g,phase:"guess",fx:{...g.fx,ti}};
+  if(card===2)return{...g,phase:"view",fx:{...g.fx,ti}};
+  if(card===3){
+    const mv=cur.hand[0],tv=tgt.hand[0];let msg,ps;
+    if(mv>tv){ps=g.players.map((p,i)=>i===ti?{...p,eliminated:true}:p);msg=cur.name+" ("+CARDS[mv].name+") bat "+tgt.name+" ("+CARDS[tv].name+") - "+tgt.name+" elimine(e) !";}
+    else if(tv>mv){ps=g.players.map((p,i)=>i===g.cur?{...p,eliminated:true}:p);msg=tgt.name+" ("+CARDS[tv].name+") bat "+cur.name+" ("+CARDS[mv].name+") - "+cur.name+" elimine(e) !";}
+    else{ps=g.players;msg="Egalite - personne n'est elimine.";}
+    const ng={...g,players:ps};return{...ng,phase:"result",fx:{card,msg,ag:ng}};
+  }
+  if(card===5){
+    const disc=tgt.hand[0];let ps,deck;
+    if(g.deck.length>0){ps=g.players.map((p,i)=>i===ti?{...p,hand:[g.deck[0]]}:p);deck=g.deck.slice(1);}
+    else{ps=g.players.map((p,i)=>i===ti?{...p,hand:[g.removed[0]??disc]}:p);deck=g.deck;}
+    const ng={...g,players:ps,deck,discard:[...g.discard,disc]};
+    return{...ng,phase:"result",fx:{card,msg:cur.name+" force "+tgt.name+" a defausser "+CARDS[disc].name+".",ag:ng}};
+  }
+  if(card===6){
+    const mv=cur.hand[0],tv=tgt.hand[0];
+    const ps=g.players.map((p,i)=>i===g.cur?{...p,hand:[tv]}:i===ti?{...p,hand:[mv]}:p);
+    const ng={...g,players:ps};return{...ng,phase:"result",fx:{card,msg:cur.name+" echange sa carte avec "+tgt.name+".",ag:ng}};
+  }
+  return nxt(g);
+}
+function applyGuess(g,guess){
+  const{ti}=g.fx,tgt=g.players[ti],tv=tgt.hand[0];let msg,ps;
+  if(guess===tv){ps=g.players.map((p,i)=>i===ti?{...p,eliminated:true}:p);msg="Bonne reponse ! "+tgt.name+" tenait "+CARDS[guess].name+" et est elimine(e) !";}
+  else{ps=g.players;msg="Mauvaise reponse. "+tgt.name+" ne tenait pas "+CARDS[guess].name+".";}
+  const ng={...g,players:ps};return{...ng,phase:"result",fx:{...g.fx,msg,ag:ng}};
+}
+function applyViewDone(g){
+  const tgt=g.players[g.fx.ti],cur=g.players[g.cur];
+  return{...g,phase:"result",fx:{...g.fx,msg:cur.name+" a regarde la carte de "+tgt.name+".",ag:g}};
+}
+function afterResult(g){
+  const ng=g.fx&&g.fx.ag?g.fx.ag:g,act=ng.players.filter(p=>!p.eliminated);
+  if(act.length<=1||ng.deck.length===0)return endRound(ng);
+  return nxt(ng);
+}
+function nxt(g){
+  const act=g.players.filter(p=>!p.eliminated);
+  if(act.length<=1||g.deck.length===0)return endRound(g);
+  let nx=(g.cur+1)%g.players.length;
+  while(g.players[nx].eliminated)nx=(nx+1)%g.players.length;
+  const ps=g.players.map((p,i)=>i===nx?{...p,protected:false}:p);
+  if(g.deck.length===0)return endRound({...g,players:ps});
+  return{...g,players:ps,deck:g.deck.slice(1),cur:nx,drawnCard:g.deck[0],phase:"choose",fx:null};
+}
+function endRound(g){
+  const act=g.players.filter(p=>!p.eliminated);
+  let winners=[];
+  if(act.length===1)winners=[act[0]];
+  else if(act.length>1){const mx=Math.max(...act.map(p=>p.hand[0]));winners=act.filter(p=>p.hand[0]===mx);}
+  const ps=g.players.map(p=>winners.some(w=>w.id===p.id)?{...p,trophies:p.trophies+1}:p);
+  const gw=ps.find(p=>p.trophies>=(GOAL[g.numP]||4))||null;
+  return{...g,players:ps,phase:"round-end",fx:{rw:winners,gw},drawnCard:null};
+}
+
+const S={
+  panel:{background:"#11161f",border:"1px solid #1e2838",borderRadius:12,padding:16,width:"100%",maxWidth:420},
+  gold:{color:"#c8a84b"},
+  muted:{color:"#5a5040",fontSize:".7rem"},
+  tag:{fontSize:".58rem",letterSpacing:".28em",color:"#5a5040",textTransform:"uppercase"},
+  btn:(v="gold")=>({
+    border:v==="ghost"?"1px solid rgba(200,168,75,.3)":"none",
+    borderRadius:8,padding:"14px 18px",fontSize:".82rem",fontWeight:700,letterSpacing:".12em",
+    background:v==="gold"?"#c8a84b":v==="ghost"?"transparent":"#7c1c1c",
+    color:v==="gold"?"#0d0c06":"#c8a84b",cursor:"pointer",transition:"opacity .15s",
+    minHeight:50,touchAction:"manipulation",WebkitTapHighlightColor:"transparent",
+  }),
+};
+
+function CardFace({value,label,onClick,disabled,small,highlight}){
+  const c=CARDS[value],sz=small?86:128;
+  return(
+    <div onClick={disabled?null:onClick} className={disabled?"":"hov"} style={{
+      background:"#f2ead8",borderRadius:7,
+      border:highlight?"2px solid #c8a84b":"2px solid #c4b896",
+      width:sz,minHeight:small?110:165,
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      gap:3,padding:"9px 6px",
+      opacity:disabled?.25:1,cursor:disabled?"not-allowed":"pointer",
+      boxShadow:highlight?"0 0 20px rgba(200,168,75,.4)":"0 4px 14px rgba(0,0,0,.5)",
+      flexShrink:0,position:"relative",
+    }}>
+      <div style={{fontSize:small?"1.6rem":"2.4rem",lineHeight:1}}>{c.e}</div>
+      <div style={{width:small?18:24,height:small?18:24,borderRadius:"50%",
+        background:c.c,color:c.a,display:"flex",alignItems:"center",justifyContent:"center",
+        fontWeight:700,fontSize:small?".58rem":".72rem",boxShadow:"0 0 8px "+c.a+"44"}}>{value}</div>
+      <div style={{fontWeight:700,fontSize:small?".68rem":".88rem",color:"#1a1008",textAlign:"center",lineHeight:1.2}}>
+        {c.name}
+      </div>
+      {!small&&<div style={{fontSize:".52rem",color:"#6b5a3a",textAlign:"center",lineHeight:1.5,padding:"0 2px"}}>{EFFECTS[value]}</div>}
+      {label&&<div style={{position:"absolute",top:3,right:5,fontSize:".44rem",color:"#8b7355",letterSpacing:".08em"}}>{label}</div>}
+    </div>
+  );
+}
+
+function MyCard({value}){
+  if(!value)return null;
+  const c=CARDS[value];
+  return(
+    <div style={{background:"#11161f",border:"1px solid #c8a84b",borderRadius:8,
+      padding:"10px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:12}}>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,flexShrink:0}}>
+        <div style={{fontSize:"1.8rem",lineHeight:1}}>{c.e}</div>
+        <div style={{width:22,height:22,borderRadius:"50%",background:c.c,color:c.a,
+          display:"flex",alignItems:"center",justifyContent:"center",
+          fontWeight:700,fontSize:".68rem",boxShadow:"0 0 8px "+c.a+"55"}}>{value}</div>
+      </div>
+      <div>
+        <div style={{fontSize:".52rem",letterSpacing:".22em",color:"#5a5040",marginBottom:2}}>TA CARTE EN MAIN</div>
+        <div style={{fontWeight:700,fontSize:".95rem",color:"#c8a84b"}}>{c.name}</div>
+        <div style={{fontSize:".6rem",color:"#8b7355",lineHeight:1.5,marginTop:1}}>{EFFECTS[value]}</div>
+      </div>
+    </div>
+  );
+}
+
+function Defausse({discard}){
+  if(!discard||discard.length===0)return(
+    <div style={{background:"#080c12",border:"1px solid #1e2838",borderRadius:6,
+      padding:"8px 12px",marginBottom:10,fontSize:".6rem",color:"#3a3028",
+      textAlign:"center",letterSpacing:".15em"}}>AUCUNE CARTE DEFAUSSEE</div>
+  );
+  const last=discard[discard.length-1],c=CARDS[last];
+  return(
+    <div style={{background:"#080c12",border:"1px solid #1e2838",borderRadius:6,
+      padding:"8px 12px",marginBottom:10,display:"flex",alignItems:"center",gap:10}}>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1,flexShrink:0}}>
+        <div style={{fontSize:"1.1rem",lineHeight:1}}>{c.e}</div>
+        <div style={{width:18,height:18,borderRadius:"50%",background:c.c,color:c.a,
+          display:"flex",alignItems:"center",justifyContent:"center",
+          fontWeight:700,fontSize:".55rem"}}>{last}</div>
+      </div>
+      <div>
+        <div style={{fontSize:".52rem",letterSpacing:".22em",color:"#5a5040"}}>DERNIERE DEFAUSSE</div>
+        <div style={{fontSize:".82rem",color:"#ddd0b0",fontWeight:700}}>{c.name}</div>
+      </div>
+      <div style={{marginLeft:"auto",fontSize:".58rem",color:"#5a5040"}}>{discard.length} carte{discard.length>1?"s":""}</div>
+    </div>
+  );
+}
+
+function Score({players,cur,myId}){
+  return(
+    <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",
+      marginBottom:10,padding:"8px",background:"#080c12",borderRadius:5,border:"1px solid #1e2838"}}>
+      {players.map((p,i)=>(
+        <div key={p.id} style={{textAlign:"center",padding:"4px 7px",borderRadius:3,
+          border:i===cur?"1px solid #c8a84b":"1px solid transparent",
+          background:i===cur?"#1a1400":"transparent",opacity:p.eliminated?.25:1}}>
+          <div style={{fontSize:".6rem",color:p.id===myId?"#c8a84b":"#ddd0b0",marginBottom:1}}>
+            {p.name}{p.id===myId?" *":""}</div>
+          <div style={{fontSize:".7rem"}}>{p.trophies?"🏆".repeat(p.trophies):"·"}</div>
+          {p.protected&&<div style={{fontSize:".48rem",color:"#22c55e"}}>🛡</div>}
+          {p.eliminated&&<div style={{fontSize:".48rem",color:"#b91c1c"}}>x</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+function InfoBar({deck,discard,roundNum}){
+  return(
+    <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,fontSize:".62rem",color:"#5a5040",letterSpacing:".15em"}}>
+      <span>MANCHE {roundNum}</span><span>PIOCHE : {deck}</span>
+    </div>
+  );
+}
+function Wait({children}){
+  return(
+    <div style={{textAlign:"center",padding:"20px 0"}}>
+      <div className="pulse" style={{fontSize:".65rem",color:"#5a5040",marginBottom:10,letterSpacing:".22em"}}>EN ATTENTE</div>
+      <div style={{fontSize:".88rem",lineHeight:1.7}}>{children}</div>
+    </div>
+  );
+}
+
+function Home({onCreate,onJoin,loading,err}){
+  const[name,setName]=useState("");
+  const[code,setCode]=useState("");
+  const[tab,setTab]=useState("create");
+  return(
+    <div style={S.panel} className="fade">
+      <div style={{textAlign:"center",marginBottom:22}}>
+        <div style={{fontFamily:"Georgia,serif",fontSize:"clamp(2.4rem,10vw,3.2rem)",color:"#c8a84b",lineHeight:1.1}}>
+          Derniere<br/><em>Heure</em></div>
+        <div style={{...S.tag,marginTop:6}}>JEU DE CARTES · 2 A 4 JOUEURS</div>
+      </div>
+      <div style={{marginBottom:14}}>
+        <div style={{...S.tag,marginBottom:4}}>TON PRENOM</div>
+        <input value={name} onChange={e=>setName(e.target.value)} placeholder="Entre ton prenom"/>
+      </div>
+      <div style={{display:"flex",gap:5,marginBottom:14}}>
+        {["create","join"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{...S.btn(t===tab?"gold":"ghost"),flex:1,padding:"9px 4px",fontSize:".7rem"}}>
+            {t==="create"?"CREER UN SALON":"REJOINDRE"}
+          </button>
+        ))}
+      </div>
+      {tab==="create"&&<>
+        <div style={{...S.muted,marginBottom:14,lineHeight:1.7}}>Cree un salon et partage le code a tes adversaires.</div>
+        <button onClick={()=>onCreate(name)} disabled={!name.trim()||loading}
+          style={{...S.btn(),width:"100%",padding:13,opacity:(!name.trim()||loading)?.4:1}}>
+          {loading?"CREATION...":"CREER LE SALON →"}
+        </button>
+      </>}
+      {tab==="join"&&<>
+        <div style={{...S.tag,marginBottom:4}}>CODE DU SALON</div>
+        <input value={code} onChange={e=>setCode(e.target.value.toUpperCase().slice(0,4))}
+          placeholder="XXXX" maxLength={4}
+          style={{textAlign:"center",fontSize:"2rem",fontFamily:"Georgia,serif",letterSpacing:".4em",color:"#c8a84b",marginBottom:12,padding:"14px",borderRadius:8}}/>
+        <button onClick={()=>onJoin(name,code)} disabled={!name.trim()||code.length<4||loading}
+          style={{...S.btn(),width:"100%",padding:13,opacity:(!name.trim()||code.length<4||loading)?.4:1}}>
+          {loading?"CONNEXION...":"REJOINDRE →"}
+        </button>
+      </>}
+      {err&&<div style={{marginTop:12,padding:"9px 12px",background:"#1f0000",border:"1px solid #b91c1c",borderRadius:4,fontSize:".75rem",color:"#ff8080"}}>{err}</div>}
+    </div>
+  );
+}
+
+function Lobby({g,myId,onStart,onBack}){
+  const isHost=g.host===myId,can=isHost&&g.players.length>=2;
+  return(
+    <div style={S.panel} className="fade">
+      <div style={{textAlign:"center",marginBottom:18}}>
+        <div style={{...S.tag,marginBottom:5}}>CODE DU SALON</div>
+        <div style={{fontFamily:"Georgia,serif",fontSize:"clamp(2.5rem,12vw,3.5rem)",color:"#c8a84b",letterSpacing:".35em",fontWeight:700}}>{g.code}</div>
+        <div style={{...S.muted,marginTop:3}}>Partage ce code a tes adversaires</div>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:7}}>
+        <span style={S.tag}>JOUEURS ({g.players.length}/4)</span>
+        <span style={S.tag}>OBJECTIF : {GOAL[g.players.length]||"?"} 🏆</span>
+      </div>
+      <div style={{background:"#080c12",borderRadius:5,border:"1px solid #1e2838",marginBottom:14,overflow:"hidden"}}>
+        {g.players.map((p,i)=>(
+          <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",
+            borderBottom:i<g.players.length-1?"1px solid #1e2838":"none"}}>
+            <span style={{color:p.id===myId?"#c8a84b":"#ddd0b0",fontSize:".88rem"}}>
+              {p.name}{p.id===myId?" (toi)":""}{p.id===g.host?" 👑":""}
+            </span>
+            <span style={S.muted}>Joueur {i+1}</span>
+          </div>
+        ))}
+      </div>
+      {isHost?(
+        <>
+          {g.players.length<2&&<div className="pulse" style={{...S.muted,textAlign:"center",marginBottom:10,letterSpacing:".2em"}}>EN ATTENTE D'UN AUTRE JOUEUR...</div>}
+          <button onClick={onStart} disabled={!can} style={{...S.btn(),width:"100%",padding:13,opacity:can?1:.4}}>COMMENCER →</button>
+        </>
+      ):(
+        <div className="pulse" style={{...S.muted,textAlign:"center",letterSpacing:".2em",padding:"8px 0"}}>EN ATTENTE DE L'HOTE...</div>
+      )}
+      <button onClick={onBack} style={{display:"block",width:"100%",marginTop:8,padding:"8px",...S.btn("ghost"),fontSize:".65rem"}}>QUITTER</button>
+    </div>
+  );
+}
+
+function Game({g,myId,onPlay,onTarget,onGuess,onViewDone,onContinue,onNextRound}){
+  const mi=g.players.findIndex(p=>p.id===myId);
+  const me=g.players[mi]||{};
+  const isMT=mi===g.cur;
+  const curP=g.players[g.cur]||{};
+  const goal=GOAL[g.numP]||4;
+  const myCard=me.hand&&Number(me.hand[0]);
+
+  const hdr=(
+    <>
+      <Score players={g.players} cur={g.cur} myId={myId}/>
+      <InfoBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+      <Defausse discard={g.discard}/>
+      <MyCard value={myCard}/>
+    </>
+  );
+
+  if(me.eliminated&&g.phase!=="round-end")return(
+    <div style={S.panel} className="fade">{hdr}
+      <Wait><span style={{color:"#b91c1c"}}>x Tu es elimine(e)</span><br/>Tour de <span style={{color:"#c8a84b"}}>{curP.name}</span></Wait>
+    </div>
+  );
+
+  if(g.phase==="choose"){
+    if(isMT){
+      const h=me.hand[0],d=g.drawnCard,cards=[h,d];
+      const forced=cards.includes(7)&&(cards.includes(5)||cards.includes(6));
+      return(
+        <div style={{maxWidth:420,width:"100%"}} className="fade">
+          <Score players={g.players} cur={g.cur} myId={myId}/>
+          <InfoBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+          <Defausse discard={g.discard}/>
+          <div style={{textAlign:"center",marginBottom:10}}>
+            <span style={S.tag}>TON TOUR — </span>
+            <span style={{color:"#c8a84b"}}>{me.name}</span>
+            {me.protected&&<span style={{marginLeft:8,fontSize:".62rem",color:"#22c55e"}}>🛡 protege(e)</span>}
+          </div>
+          {forced&&<div style={{background:"#1f0800",border:"1px solid #7c2d12",borderRadius:4,padding:"8px 12px",marginBottom:12,fontSize:".72rem",color:"#ff9050",textAlign:"center"}}>
+            Tu dois jouer le Dragon — tu tiens aussi {cards.includes(5)?"Troll":"Kiosque"}.
+          </div>}
+          <div style={{...S.tag,textAlign:"center",marginBottom:10}}>QUELLE CARTE JOUES-TU ?</div>
+          <div style={{display:"flex",gap:16,justifyContent:"center",marginTop:8}}>
+            {cards.map((v,i)=><CardFace key={i} value={v} label={i===0?"EN MAIN":"PIOCHEE"} disabled={forced&&v!==7} onClick={()=>onPlay(i)} highlight={!forced||v===7}/>)}
+          </div>
+        </div>
+      );
+    }
+    return <div style={S.panel} className="fade">{hdr}<Wait><span style={{color:"#c8a84b"}}>{curP.name}</span> choisit une carte...</Wait></div>;
+  }
+
+  if(g.phase==="target"){
+    if(isMT){
+      const tgts=g.fx.v.map(i=>g.players[i]);
+      return(
+        <div style={S.panel} className="fade">
+          <Score players={g.players} cur={g.cur} myId={myId}/>
+          <InfoBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+          <Defausse discard={g.discard}/>
+          <MyCard value={myCard}/>
+          <div style={{textAlign:"center",marginBottom:14}}>
+            <div style={{fontSize:"2rem"}}>{CARDS[g.fx.card].e}</div>
+            <div style={{fontFamily:"Georgia,serif",fontSize:"1.2rem",color:"#c8a84b",marginBottom:3}}>{CARDS[g.fx.card].name}</div>
+            <div style={{...S.muted,lineHeight:1.6}}>{EFFECTS[g.fx.card]}</div>
+          </div>
+          <div style={{...S.tag,marginBottom:8}}>CHOISIS UNE CIBLE</div>
+          <div style={{display:"flex",flexDirection:"column",gap:7}}>
+            {tgts.map((p,i)=>(
+              <button key={p.id} onClick={()=>onTarget(g.fx.v[i])}
+                style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  padding:"14px 16px",background:"#080c12",border:"1px solid #1e2838",
+                  borderRadius:8,color:"#ddd0b0",fontSize:".95rem",transition:"all .12s",minHeight:52}}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor="#c8a84b";e.currentTarget.style.background="#1a1400";}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="#1e2838";e.currentTarget.style.background="#080c12";}}>
+                <span>{p.name}{p.id===myId?" (toi)":""}</span>
+                <span style={{opacity:.6}}>{"🏆".repeat(p.trophies)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return <div style={S.panel} className="fade">{hdr}<Wait><span style={{color:"#c8a84b"}}>{curP.name}</span> choisit une cible...</Wait></div>;
+  }
+
+  if(g.phase==="guess"){
+    if(isMT){
+      const tgt=g.players[g.fx.ti];
+      return(
+        <div style={{maxWidth:420,width:"100%"}} className="fade">
+          <Score players={g.players} cur={g.cur} myId={myId}/>
+          <InfoBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+          <Defausse discard={g.discard}/>
+          <MyCard value={myCard}/>
+          <div style={{textAlign:"center",marginBottom:14}}>
+            <div style={{fontSize:"2rem"}}>{CARDS[1].e}</div>
+            <div style={{fontFamily:"Georgia,serif",fontSize:"1.2rem",color:"#c8a84b",marginBottom:4}}>Plante</div>
+            <div style={{fontSize:".85rem"}}>Quelle carte tient <strong style={{color:"#c8a84b"}}>{tgt&&tgt.name}</strong> ?</div>
+            <div style={{...S.muted,marginTop:2}}>(sauf Plante)</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:9,justifyItems:"center"}}>
+            {Object.keys(CARDS).filter(v=>Number(v)!==1).map(v=><CardFace key={v} value={Number(v)} small onClick={()=>onGuess(Number(v))}/>)}
+          </div>
+        </div>
+      );
+    }
+    const tgt=g.players[g.fx&&g.fx.ti];
+    return <div style={S.panel} className="fade">{hdr}<Wait><span style={{color:"#c8a84b"}}>{curP.name}</span> devine la carte de <span style={{color:"#c8a84b"}}>{tgt&&tgt.name}</span>...</Wait></div>;
+  }
+
+  if(g.phase==="view"){
+    const ti=g.fx&&g.fx.ti,tgt=g.players[ti],amIT=ti===mi;
+    if(isMT){
+      const cv=tgt&&tgt.hand&&tgt.hand[0];
+      return(
+        <div style={{...S.panel,textAlign:"center"}} className="fade">
+          <Score players={g.players} cur={g.cur} myId={myId}/>
+          <InfoBar deck={g.deck.length} discard={g.discard.length} roundNum={g.roundNum}/>
+          <Defausse discard={g.discard}/>
+          <MyCard value={myCard}/>
+          <div style={{fontSize:"2rem"}}>{CARDS[2].e}</div>
+          <div style={{fontFamily:"Georgia,serif",fontSize:"1.2rem",color:"#c8a84b",marginBottom:3}}>Rat</div>
+          <div style={{...S.muted,marginBottom:5}}>carte de <strong style={{color:"#ddd0b0"}}>{tgt&&tgt.name}</strong></div>
+          <div style={{display:"inline-flex",alignItems:"center",gap:5,background:"#1f0000",border:"1px solid #7c1c1c",borderRadius:99,padding:"2px 10px",fontSize:".6rem",color:"#ff8080",marginBottom:16}}>visible uniquement pour toi</div>
+          {cv&&<div style={{display:"flex",justifyContent:"center",marginBottom:16}}><CardFace value={cv}/></div>}
+          <button onClick={onViewDone} style={{...S.btn(),width:"100%"}}>J'AI VU — CONTINUER</button>
+        </div>
+      );
+    }
+    return(
+      <div style={S.panel} className="fade">{hdr}
+        <Wait>{amIT?<><span style={{color:"#c8a84b"}}>{curP.name}</span> regarde ta carte... 👀</>:<><span style={{color:"#c8a84b"}}>{curP.name}</span> regarde la carte de <span style={{color:"#c8a84b"}}>{tgt&&tgt.name}</span>...</>}</Wait>
+      </div>
+    );
+  }
+
+  if(g.phase==="result")return(
+    <div style={S.panel} className="fade">{hdr}
+      <div style={{fontFamily:"Georgia,serif",fontSize:"1.2rem",color:"#c8a84b",fontStyle:"italic",textAlign:"center",marginBottom:10}}>Resultat</div>
+      <div style={{background:"#080c12",border:"1px solid #1e2838",borderRadius:5,padding:"13px",marginBottom:14,fontSize:".85rem",lineHeight:1.8,textAlign:"center"}}>
+        {g.fx&&g.fx.msg}
+      </div>
+      {isMT
+        ?<button onClick={onContinue} style={{...S.btn(),width:"100%"}}>CONTINUER →</button>
+        :<div className="pulse" style={{...S.muted,textAlign:"center",letterSpacing:".18em"}}>EN ATTENTE DE {curP.name&&curP.name.toUpperCase()}...</div>
+      }
+    </div>
+  );
+
+  if(g.phase==="round-end"){
+    const rw=(g.fx&&g.fx.rw)||[],gw=g.fx&&g.fx.gw,isH=g.host===myId;
+    return(
+      <div style={S.panel} className="fade">
+        <div style={{textAlign:"center",marginBottom:16}}>
+          <span style={S.tag}>FIN DE LA MANCHE {g.roundNum}</span>
+          <div style={{fontSize:"2rem",margin:"8px 0 4px"}}>🏆</div>
+          <div style={{fontFamily:"Georgia,serif",fontSize:"1.6rem",color:"#c8a84b",fontWeight:700}}>
+            {rw.map(w=>w.name).join(" & ")||"—"}
+          </div>
+          {rw.length>1&&<div style={{...S.muted,marginTop:2}}>egalite</div>}
+        </div>
+        <div style={{...S.tag,marginBottom:8}}>CARTES REVELEES</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginBottom:14}}>
+          {g.players.filter(p=>!p.eliminated&&p.hand&&p.hand[0]).map(p=>(
+            <div key={p.id} style={{textAlign:"center"}}>
+              <CardFace value={p.hand[0]} small highlight={rw.some(w=>w.id===p.id)}/>
+              <div style={{fontSize:".6rem",color:rw.some(w=>w.id===p.id)?"#c8a84b":"#5a5040",marginTop:4}}>{p.name}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"#080c12",border:"1px solid #1e2838",borderRadius:5,padding:"8px",marginBottom:14}}>
+          {[...g.players].sort((a,b)=>b.trophies-a.trophies).map(p=>(
+            <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #1e2838",opacity:p.eliminated?.4:1}}>
+              <span style={{fontSize:".84rem",color:rw.some(w=>w.id===p.id)?"#c8a84b":"#ddd0b0"}}>{p.name}{p.id===myId?" (toi)":""}</span>
+              <span style={{fontSize:".8rem"}}>{"🏆".repeat(p.trophies)} <span style={{...S.muted}}>/{goal}</span></span>
+            </div>
+          ))}
+        </div>
+        {isH
+          ?<button onClick={onNextRound} style={{...S.btn(),width:"100%",padding:13}}>{gw?"VOIR LE VAINQUEUR →":"MANCHE SUIVANTE →"}</button>
+          :<div className="pulse" style={{...S.muted,textAlign:"center",letterSpacing:".18em"}}>EN ATTENTE DE L'HOTE...</div>
+        }
+      </div>
+    );
+  }
+  return null;
+}
+
+function End({g,myId,onNew}){
+  const sorted=[...g.players].sort((a,b)=>b.trophies-a.trophies),gw=sorted[0],isH=g.host===myId;
+  return(
+    <div style={{...S.panel,textAlign:"center"}} className="fade">
+      <span style={S.tag}>PARTIE TERMINEE</span>
+      <div style={{fontSize:"3rem",margin:"14px 0 8px"}}>🏆</div>
+      <div style={{fontFamily:"Georgia,serif",fontSize:"2rem",color:"#c8a84b",fontWeight:700,marginBottom:4}}>{gw&&gw.name}</div>
+      <div style={{...S.muted,marginBottom:20}}>{gw&&gw.trophies} trophees remportes</div>
+      <div style={{background:"#080c12",border:"1px solid #1e2838",borderRadius:5,padding:"10px",marginBottom:18,textAlign:"left"}}>
+        {sorted.map((p,r)=>(
+          <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e2838"}}>
+            <span style={{fontSize:".88rem",color:r===0?"#c8a84b":"#ddd0b0"}}>{r===0?"👑 ":r===1?"🥈 ":"   "}{p.name}{p.id===myId?" (toi)":""}</span>
+            <span>{"🏆".repeat(p.trophies)}</span>
+          </div>
+        ))}
+      </div>
+      {isH?<button onClick={onNew} style={{...S.btn(),width:"100%",padding:13}}>NOUVELLE PARTIE</button>
+      :<div className="pulse" style={{...S.muted,letterSpacing:".18em"}}>EN ATTENTE DE L'HOTE...</div>}
+    </div>
+  );
+}
+
+function App(){
+  const[myId,setMyId]=useState("");
+  const[screen,setScreen]=useState("home");
+  const[code,setCode]=useState("");
+  const[g,setG]=useState(null);
+  const[err,setErr]=useState("");
+  const[loading,setLoad]=useState(false);
+
+  useEffect(()=>{
+    let id=localStorage.getItem("dh_pid");
+    if(!id){id=genId();localStorage.setItem("dh_pid",id);}
+    setMyId(id);
+  },[]);
+
+  useEffect(()=>{
+    if(!code)return;
+    return FB.listen(code,data=>{
+      if(!data)return;
+      setG(data);
+      if(data.status==="lobby")setScreen("lobby");
+      if(data.status==="playing")setScreen("game");
+      if(data.status==="end")setScreen("end");
+    });
+  },[code]);
+
+  const write=async s=>{const ns={...s,version:(s.version||0)+1};await FB.set(code,ns);return ns;};
+
+  async function handleCreate(name){
+    if(!name.trim()||!myId)return;setLoad(true);setErr("");
+    const c=genCode();
+    const s={status:"lobby",version:0,host:myId,code:c,players:[{id:myId,name:name.trim(),trophies:0}]};
+    await FB.set(c,s);setCode(c);setG(s);setScreen("lobby");setLoad(false);
+  }
+  async function handleJoin(name,c){
+    if(!name.trim()||!myId||!c)return;setLoad(true);setErr("");
+    const data=await FB.get(c);
+    if(!data){setErr("Salon introuvable.");setLoad(false);return;}
+    if(data.status!=="lobby"){setErr("La partie a deja commence.");setLoad(false);return;}
+    if(data.players.length>=4){setErr("Salon plein (4 max).");setLoad(false);return;}
+    let ns=data;
+    if(!data.players.some(p=>p.id===myId)){
+      ns={...data,players:[...data.players,{id:myId,name:name.trim(),trophies:0}],version:data.version+1};
+      await FB.set(c,ns);
+    }
+    setCode(c);setG(ns);setScreen("lobby");setLoad(false);
+  }
+  async function handleStart(){
+    if(!g||g.host!==myId||g.players.length<2)return;
+    const numP=g.players.length,rd=initRound(g.players,numP,1);
+    await write({...g,status:"playing",numP,...rd});
+  }
+
+  const mi=g?g.players.findIndex(p=>p.id===myId):-1;
+  const isMT=g&&mi===g.cur;
+
+  async function onPlay(idx){
+    if(!isMT||g.phase!=="choose")return;
+    const p=g.players[g.cur],cards=[p.hand[0],g.drawnCard],played=cards[idx],kept=cards[1-idx];
+    if(cards.includes(7)&&(cards.includes(5)||cards.includes(6))&&played!==7)return;
+    const ps=g.players.map((pl,i)=>i===g.cur?{...pl,hand:[kept]}:pl);
+    const ng={...g,players:ps,discard:[...g.discard,played],drawnCard:null};
+    const nx=applyCard(Number(played),ng);if(nx)await write(nx);
+  }
+  async function onTarget(ti){if(!isMT||g.phase!=="target")return;const nx=applyTarget(g,ti);if(nx)await write(nx);}
+  async function onGuess(guess){if(!isMT||g.phase!=="guess")return;await write(applyGuess(g,guess));}
+  async function onViewDone(){if(!isMT||g.phase!=="view")return;await write(applyViewDone(g));}
+  async function onContinue(){if(!isMT||g.phase!=="result")return;await write(afterResult(g));}
+  async function onNextRound(){
+    if(!g||g.host!==myId||g.phase!=="round-end")return;
+    if(g.fx&&g.fx.gw)await write({...g,status:"end"});
+    else{const rd=initRound(g.players,g.numP,g.roundNum+1);await write({...g,...rd});}
+  }
+  async function onNew(){
+    if(!g||g.host!==myId)return;
+    const s={status:"lobby",version:g.version,host:myId,code,players:g.players.map(p=>({id:p.id,name:p.name,trophies:0}))};
+    await write(s);setScreen("lobby");
+  }
+  function onBack(){setScreen("home");setCode("");setG(null);}
+
+  return(
+    <>
+      {screen==="home"&&<Home onCreate={handleCreate} onJoin={handleJoin} loading={loading} err={err}/>}
+      {screen==="lobby"&&g&&<Lobby g={g} myId={myId} onStart={handleStart} onBack={onBack}/>}
+      {screen==="game"&&g&&<Game g={g} myId={myId} onPlay={onPlay} onTarget={onTarget} onGuess={onGuess} onViewDone={onViewDone} onContinue={onContinue} onNextRound={onNextRound}/>}
+      {screen==="end"&&g&&<End g={g} myId={myId} onNew={onNew}/>}
+    </>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
