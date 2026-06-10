@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Opérations d'inventaire des stocks</title>
+<style>
+  :root {
+    --app:#e6e8ee; --paper:#fff; --ink:#1f2937; --navy:#1d2a3a;
+    --muted:#6c7480; --line:#dcdae1; --lineSoft:#eceaf0;
+    --debit:#9b3d3d; --credit:#1f6e5b; --brass:#bf9b30; --zebra:#f7f6f9;
+    --mono:ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body {
+    background:var(--app); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:28px 18px;
+  }
+  .wrap { max-width:880px; margin:0 auto; }
+
+  header.top {
+    background:var(--navy); border-radius:6px; padding:22px 24px;
+    border-top:3px solid var(--brass); margin-bottom:18px;
+  }
+  header.top .eyebrow {
+    font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--brass); margin-bottom:6px;
+  }
+  header.top h1 { margin:0; font-size:23px; color:#fff; font-weight:700; letter-spacing:-.01em; }
+  header.top p { margin:8px 0 0; font-size:13.5px; color:#b9c0cc; max-width:560px; }
+
+  section.card {
+    background:var(--paper); border-radius:4px; border:1px solid var(--line);
+    padding:20px 22px; margin-bottom:18px;
+  }
+  .sec-head { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .sec-num { font-family:var(--mono); font-size:12px; color:var(--brass); font-weight:700; letter-spacing:.05em; }
+  .sec-head h3 { margin:0; font-size:16px; color:var(--navy); font-weight:700; }
+
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th.h {
+    font-size:11px; letter-spacing:.05em; text-transform:uppercase;
+    color:var(--muted); font-weight:600; padding:6px 8px;
+  }
+  .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .right { text-align:right; }
+  .left { text-align:left; }
+
+  input {
+    width:100%; border:1px solid var(--line); border-radius:3px; padding:6px 8px;
+    font-size:13.5px; text-align:right; font-family:var(--mono);
+    font-variant-numeric:tabular-nums; color:var(--ink); background:#fff; outline:none;
+  }
+  input:focus { border-color:var(--navy); }
+
+  button {
+    border:1px solid var(--line); border-radius:4px; padding:7px 14px;
+    font-size:13px; cursor:pointer; font-family:inherit;
+  }
+  button.primary { background:#fff; color:var(--navy); font-weight:600; }
+  button.ghost { background:transparent; color:var(--muted); }
+
+  .scroll { overflow-x:auto; }
+  .note { font-size:12.5px; color:var(--muted); margin:12px 0 0; line-height:1.5; }
+  .foot { font-size:11.5px; color:var(--muted); text-align:center; margin:4px 0 8px; }
+
+  .ecr { margin-bottom:22px; }
+  .ecr-title { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; }
+  .ecr-title h4 { margin:0; font-size:14px; color:var(--navy); font-weight:650; }
+  .ecr-title span { font-size:12px; color:var(--muted); }
+  @media (max-width:560px){ body{padding:18px 10px;} section.card{padding:16px 14px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow">Grand livre · inventaire intermittent</div>
+    <h1>Opérations d'inventaire des stocks</h1>
+    <p>Saisissez vos stocks bruts et vos dépréciations. Les écritures de variation, les régularisations
+       de dépréciation, l'impact sur le résultat et l'extrait de bilan se calculent au fur et à mesure.</p>
+  </header>
+
+  <!-- Saisie -->
+  <section class="card">
+    <div class="sec-head"><span class="sec-num">01</span><h3>Saisie des données</h3></div>
+    <div class="scroll">
+      <table style="min-width:560px">
+        <thead>
+          <tr style="border-bottom:1px solid var(--line)">
+            <th class="h left">Famille</th>
+            <th class="h">Stock initial<br><span style="text-transform:none;letter-spacing:0">(brut, 01/01)</span></th>
+            <th class="h">Stock final<br><span style="text-transform:none;letter-spacing:0">(brut, 31/12)</span></th>
+            <th class="h">Dépréc. N-1</th>
+            <th class="h">Dépréc. N</th>
+          </tr>
+        </thead>
+        <tbody id="saisie"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="primary" id="btnPreset">Jeu d'essai</button>
+      <button class="ghost" id="btnVider">Vider</button>
+    </div>
+  </section>
+
+  <!-- Sorties calculées -->
+  <div id="outputs"></div>
+
+  <p class="foot">Inventaire intermittent · PCG · valeurs en euros · saisie au format français (virgule décimale)</p>
+</div>
+
+<script>
+// ── Référentiel PCG des familles de stock ───────────────────────────
+const FAMILLES = [
+  { key:"mp",  nom:"Matières premières", cStock:"31", stockLib:"Stocks de matières premières",
+    cVar:"6031", varLib:"Variation des stocks de MP", cDep:"391",  depLib:"Dépréciations des stocks de MP" },
+  { key:"pf",  nom:"Produits finis", cStock:"35", stockLib:"Stocks de produits finis",
+    cVar:"7135", varLib:"Variation des stocks de PF", cDep:"3955", depLib:"Dépréciations des stocks de PF" },
+  { key:"mar", nom:"Marchandises", cStock:"37", stockLib:"Stocks de marchandises",
+    cVar:"6037", varLib:"Variation des stocks de marchandises", cDep:"397", depLib:"Dépréciations des stocks de marchandises" },
+];
+
+const PRESET = {
+  mp:  { si:"10000,00", sf:"8000,00",  depN1:"500,00", depN:"300,00" },
+  pf:  { si:"20000,00", sf:"24000,00", depN1:"800,00", depN:"0" },
+  mar: { si:"15000,00", sf:"12000,00", depN1:"0",      depN:"600,00" },
+};
+const EMPTY = {
+  mp:{si:"",sf:"",depN1:"",depN:""}, pf:{si:"",sf:"",depN1:"",depN:""}, mar:{si:"",sf:"",depN1:"",depN:""},
+};
+
+// État courant (copie du jeu d'essai)
+let data = JSON.parse(JSON.stringify(PRESET));
+
+// ── Utilitaires ─────────────────────────────────────────────────────
+const num = (s) => { const v = parseFloat(String(s).replace(/\s/g,"").replace(",",".")); return isNaN(v)?0:v; };
+const fmt = (n) => n.toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtSign = (n) => (n>0?"+ ":n<0?"− ":"") + fmt(Math.abs(n));
+const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+// ── Construction du tableau de saisie ───────────────────────────────
+function buildSaisie(){
+  const tb = document.getElementById("saisie");
+  tb.innerHTML = FAMILLES.map((f,i) => `
+    <tr style="background:${i%2?'var(--zebra)':'transparent'}">
+      <td style="padding:8px">
+        <div style="font-weight:600">${f.nom}</div>
+        <div class="mono" style="font-size:11px;color:var(--muted)">${f.cStock} · ${f.cVar} · ${f.cDep}</div>
+      </td>
+      ${["si","sf","depN1","depN"].map(field => `
+        <td style="padding:6px 8px">
+          <input inputmode="decimal" placeholder="0,00"
+                 data-key="${f.key}" data-field="${field}" value="${esc(data[f.key][field])}">
+        </td>`).join("")}
+    </tr>`).join("");
+
+  tb.querySelectorAll("input").forEach(inp => {
+    inp.addEventListener("input", e => {
+      data[e.target.dataset.key][e.target.dataset.field] = e.target.value;
+      renderOutputs();
+    });
+  });
+}
+
+function setInputs(obj){
+  data = JSON.parse(JSON.stringify(obj));
+  document.querySelectorAll("#saisie input").forEach(inp => {
+    inp.value = data[inp.dataset.key][inp.dataset.field];
+  });
+  renderOutputs();
+}
+
+// ── Rendu d'une écriture ────────────────────────────────────────────
+function ecriture(titre, sous, lignes){
+  const totD = lignes.reduce((a,l)=>a+(l.debit||0),0);
+  const totC = lignes.reduce((a,l)=>a+(l.credit||0),0);
+  const eq = Math.abs(totD-totC) < 0.005;
+  const corps = lignes.map(l => `
+    <tr style="border-top:1px solid var(--lineSoft)">
+      <td class="mono" style="padding:6px 8px;color:var(--navy)">${l.compte}</td>
+      <td style="padding:6px 8px;${l.credit?'padding-left:26px':''};color:var(--ink)">${esc(l.lib)}</td>
+      <td class="mono right" style="padding:6px 8px">${l.debit?fmt(l.debit):""}</td>
+      <td class="mono right" style="padding:6px 8px">${l.credit?fmt(l.credit):""}</td>
+    </tr>`).join("");
+  return `
+  <div class="ecr">
+    <div class="ecr-title"><h4>${titre}</h4><span>${sous}</span></div>
+    <table>
+      <thead><tr>
+        <th class="h left" style="width:64px">Compte</th>
+        <th class="h left">Libellé</th>
+        <th class="h right" style="width:110px">Débit</th>
+        <th class="h right" style="width:110px">Crédit</th>
+      </tr></thead>
+      <tbody>
+        ${corps}
+        <tr style="border-top:2px solid var(--line);font-weight:650">
+          <td colspan="2" style="padding:6px 8px;color:var(--muted);font-size:12px">
+            ${eq ? "Écriture équilibrée" : "⚠ Écriture déséquilibrée"}
+          </td>
+          <td class="mono right" style="padding:6px 8px">${fmt(totD)}</td>
+          <td class="mono right" style="padding:6px 8px">${fmt(totC)}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function sectionCard(n, titre, inner){
+  return `<section class="card">
+    <div class="sec-head"><span class="sec-num">${n}</span><h3>${titre}</h3></div>
+    ${inner}
+  </section>`;
+}
+
+// ── Calcul + rendu des sorties ──────────────────────────────────────
+function renderOutputs(){
+  const rows = FAMILLES.map(f => {
+    const si=num(data[f.key].si), sf=num(data[f.key].sf);
+    const depN1=num(data[f.key].depN1), depN=num(data[f.key].depN);
+    return { ...f, si, sf, depN1, depN, variation:sf-si, net:sf-depN };
+  });
+
+  // Écritures de variation
+  const e1 = [
+    ...rows.filter(r=>r.si>0).map(r=>({compte:r.cVar,lib:r.varLib,debit:r.si})),
+    ...rows.filter(r=>r.si>0).map(r=>({compte:r.cStock,lib:r.stockLib,credit:r.si})),
+  ];
+  const e2 = [
+    ...rows.filter(r=>r.sf>0).map(r=>({compte:r.cStock,lib:r.stockLib,debit:r.sf})),
+    ...rows.filter(r=>r.sf>0).map(r=>({compte:r.cVar,lib:r.varLib,credit:r.sf})),
+  ];
+  // Dépréciations
+  const totRepr = rows.reduce((a,r)=>a+r.depN1,0);
+  const e3 = [
+    ...rows.filter(r=>r.depN1>0).map(r=>({compte:r.cDep,lib:r.depLib,debit:r.depN1})),
+    ...(totRepr>0 ? [{compte:"78173",lib:"Reprises sur dépréciations des stocks",credit:totRepr}] : []),
+  ];
+  const totDot = rows.reduce((a,r)=>a+r.depN,0);
+  const e4 = [
+    ...(totDot>0 ? [{compte:"68173",lib:"Dotations aux dépréciations des stocks",debit:totDot}] : []),
+    ...rows.filter(r=>r.depN>0).map(r=>({compte:r.cDep,lib:r.depLib,credit:r.depN})),
+  ];
+
+  const impactVar = rows.reduce((a,r)=>a+r.variation,0);
+  const impactDep = totRepr - totDot;
+  const impactTot = impactVar + impactDep;
+
+  // Section 02 — variations
+  const varRows = rows.map(r => {
+    const col = r.variation>0?"var(--credit)":r.variation<0?"var(--debit)":"var(--muted)";
+    const sens = r.variation>0?"Stockage":r.variation<0?"Déstockage":"Stable";
+    return `<tr style="border-top:1px solid var(--lineSoft)">
+      <td style="padding:7px 8px">${r.nom}</td>
+      <td class="mono right" style="padding:7px 8px;color:${col}">${fmtSign(r.variation)}</td>
+      <td class="right" style="padding:7px 8px;font-weight:600;color:${col}">${sens}</td>
+    </tr>`;
+  }).join("");
+  const sec02 = `<table>
+    <thead><tr style="border-bottom:1px solid var(--line)">
+      <th class="h left">Famille</th><th class="h right">SF − SI</th><th class="h right">Sens</th>
+    </tr></thead><tbody>${varRows}</tbody></table>`;
+
+  // Section 05 — impact résultat
+  const cVar = impactVar>=0?"var(--credit)":"var(--debit)";
+  const cDep = impactDep>=0?"var(--credit)":"var(--debit)";
+  const cTot = impactTot>=0?"var(--credit)":"var(--debit)";
+  const sec05 = `<table><tbody>
+      <tr style="border-bottom:1px solid var(--lineSoft)">
+        <td style="padding:8px">Variation des stocks <span style="color:var(--muted);font-size:12px">(6031 / 6037 / 7135)</span></td>
+        <td class="mono right" style="padding:8px;color:${cVar};font-weight:600">${fmtSign(impactVar)}</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--lineSoft)">
+        <td style="padding:8px">Dépréciations <span style="color:var(--muted);font-size:12px">(78173 reprise − 68173 dotation)</span></td>
+        <td class="mono right" style="padding:8px;color:${cDep};font-weight:600">${fmtSign(impactDep)}</td>
+      </tr>
+      <tr style="border-top:2px solid var(--line)">
+        <td style="padding:10px 8px;font-weight:700;color:var(--navy)">Impact net sur le résultat</td>
+        <td class="mono right" style="padding:10px 8px;font-weight:700;font-size:15px;color:${cTot}">${fmtSign(impactTot)}</td>
+      </tr>
+    </tbody></table>
+    <p class="note">Repère : un <strong style="color:var(--credit)">stockage</strong> enrichit le résultat
+      (charges en moins ou production stockée), un <strong style="color:var(--debit)">déstockage</strong> l'appauvrit.
+      La dotation est une charge, la reprise un produit.</p>`;
+
+  // Section 06 — bilan
+  const bilRows = rows.map(r => `
+    <tr style="border-top:1px solid var(--lineSoft)">
+      <td style="padding:7px 8px">${r.stockLib}</td>
+      <td class="mono right" style="padding:7px 8px">${fmt(r.sf)}</td>
+      <td class="mono right" style="padding:7px 8px;color:${r.depN?'var(--debit)':'var(--muted)'}">${r.depN?fmt(r.depN):"—"}</td>
+      <td class="mono right" style="padding:7px 8px;font-weight:650;color:var(--navy)">${fmt(r.net)}</td>
+    </tr>`).join("");
+  const sec06 = `<table>
+    <thead><tr style="border-bottom:1px solid var(--line)">
+      <th class="h left">Actif</th><th class="h right">Brut</th><th class="h right">Dépréc.</th><th class="h right">Net</th>
+    </tr></thead><tbody>${bilRows}</tbody></table>`;
+
+  document.getElementById("outputs").innerHTML =
+    sectionCard("02","Variation des stocks", sec02) +
+    sectionCard("03","Écritures de mise à jour (valeurs brutes)",
+      ecriture("Annulation du stock initial","au 31/12/N",e1) +
+      ecriture("Constatation du stock final","au 31/12/N",e2)) +
+    sectionCard("04","Régularisation des dépréciations",
+      ecriture("Reprise des dépréciations N-1","annulation de l'ancienne dépréciation",e3) +
+      ecriture("Dotation des dépréciations N","constitution de la nouvelle dépréciation",e4)) +
+    sectionCard("05","Impact sur le résultat", sec05) +
+    sectionCard("06","Extrait de bilan après inventaire", sec06);
+}
+
+// ── Initialisation ──────────────────────────────────────────────────
+document.getElementById("btnPreset").addEventListener("click", () => setInputs(PRESET));
+document.getElementById("btnVider").addEventListener("click", () => setInputs(EMPTY));
+buildSaisie();
+renderOutputs();
+</script>
+</body>
+</html>
